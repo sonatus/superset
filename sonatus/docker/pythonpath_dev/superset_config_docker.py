@@ -1,5 +1,6 @@
-from datetime import timedelta
 import logging
+from datetime import timedelta
+
 FEATURE_FLAGS = {
     "ALERT_REPORTS": True,
     "ENABLE_SUPERSET_META_DB": True,
@@ -9,13 +10,12 @@ FEATURE_FLAGS = {
 LOG_LEVEL = logging.DEBUG
 
 # The limit for the Superset Meta DB when the feature flag ENABLE_SUPERSET_META_DB is on
-SUPERSET_META_DB_LIMIT= 1000
+SUPERSET_META_DB_LIMIT = 1000
 # Maximum number of rows returned for any analytical database query
 SQL_MAX_ROW = 100000
 
 # Maximum number of rows for any query with Server Pagination in Table Viz type
 TABLE_VIZ_MAX_ROW_SERVER = 500000
-
 
 
 # Maximum number of rows displayed in SQL Lab UI
@@ -26,8 +26,6 @@ DISPLAY_MAX_ROW = 10000
 # Default row limit for SQL Lab queries. Is overridden by setting a new limit in
 # the SQL Lab UI
 DEFAULT_SQLLAB_LIMIT = 1000
-
-SUPERSET_META_DB_LIMIT: int | None = 1000
 
 
 # The db id here results in selecting this one as a default in SQL Lab
@@ -53,3 +51,10 @@ SQLLAB_QUERY_COST_ESTIMATE_TIMEOUT = int(timedelta(seconds=10).total_seconds())
 # Timeout duration for SQL Lab fetching query results by the resultsKey.
 # 0 means no timeout.
 SQLLAB_QUERY_RESULT_TIMEOUT = 0
+
+PREFERRED_DATABASES: list[str] = [
+    "Distributed Query Engine",
+    "PostgreSQL",
+    "Presto",
+    "SQLite",
+]

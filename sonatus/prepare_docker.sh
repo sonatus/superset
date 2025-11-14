@@ -40,6 +40,8 @@ fi
 echo "Wheel artifact found: $WHEEL_FILE"
 
 
+
+
 echo "Copying wheel to repo-root docker directory..."
 cp "$WHEEL_FILE" "$REPO_ROOT/docker/"
 echo "Wheel copied to $REPO_ROOT/docker/"
@@ -50,3 +52,7 @@ SONATUS_DOCKER="$SCRIPT_DIR/docker"
 REPO_DOCKER="$REPO_ROOT/docker"
 cp -r "$SONATUS_DOCKER/." "$REPO_DOCKER/"
 echo "Docker files sync complete."
+
+
+# echo "Updating docker/requirements-local.txt to reference local wheels..." # TODO: workaround for slow  downloads
+# cp "$REPO_DOCKER/requirements-local-vendored.txt" "$REPO_DOCKER/requirements-local.txt"

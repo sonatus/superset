@@ -1,16 +1,26 @@
-""" """
-
 from __future__ import annotations
 
 import logging
+import weakref
 from typing import Any, Mapping, MutableMapping, Sequence
 
-from helpers import coerce_schema, make_type
 from sqlalchemy import bindparam, pool, text
 from sqlalchemy.engine import Connection, default
 from sqlalchemy.engine.url import URL
 from sqlalchemy.sql import compiler
 from sqlalchemy.types import String
+
+# Import the real driver at module level (or inside dbapi if lazy loading is preferred)
+try:
+    from adbc_driver_flightsql import dbapi as _adbc_dbapi
+except ImportError:
+    _adbc_dbapi = None
+
+from .helpers import coerce_schema, make_type
+
+logger = logging.getLogger(__name__)
+_DEFAULT_GRPC_PORT = 32010
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +49,68 @@ class LiteralBindCompiler(compiler.SQLCompiler):
         )
 
 
+# Wrapper classes to ensure safe cursor/connection handling with ADBC
+class LoggingAdbcCursor:
+    """
+    Proxy for the ADBC Cursor needed to intercept executed statements.
+    """
+
+    def __init__(self, cursor: Any):
+        self._cursor = cursor
+
+    def execute(self, statement: str, *args: Any, **kwargs: Any) -> Any:
+        log_stmt = statement if statement else ""
+        logger.info("ADBC:Intercepted SQL statement: %s", log_stmt)
+        return self._cursor.execute(statement, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+    def close(self) -> None:
+        self._cursor.close()
+
+
+class SafeAdbcConnection:
+    """
+    Wrapper for ADBC Connection.
+
+    Solves the 'NullPool' crash by tracking open cursors and forcibly
+    closing them before closing the connection itself.
+    """
+
+    def __init__(self, wrapped_conn: Any):
+        self._conn = wrapped_conn
+        # WeakSet tracks cursors without preventing Garbage Collection
+        self._cursors: weakref.WeakSet[Any] = weakref.WeakSet()
+
+    def cursor(self) -> Any:
+        real_cursor = self._conn.cursor()
+        safe_cursor = LoggingAdbcCursor(real_cursor)
+
+        # Track the REAL cursor, not the wrapper, so we can close the backend resource
+        self._cursors.add(real_cursor)
+        return safe_cursor
+
+    def close(self) -> None:
+        """
+        Safely close all cursors before closing the connection.
+        CRITICAL: This prevents 'RuntimeError: Cannot close AdbcConnection'
+        when using NullPool by ensuring all cursors are closed first.
+        """
+        for c in self._cursors:
+            try:
+                c.close()
+            except Exception:
+                logging.warning("Cursor might already be closed or invalid; ignore.")
+                pass
+
+        # Now it is safe to close the connection
+        self._conn.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
 class TSDBDialect(default.DefaultDialect):
     """SQLAlchemy dialect backed by the FlightSQL ADBC DB-API."""
 
@@ -58,26 +130,35 @@ class TSDBDialect(default.DefaultDialect):
     supports_unicode_statements = True
     supports_sane_rowcount = False
     supports_sane_multi_rowcount = False
-    # default_schema_name = "all" #TODO: confirm not needed and remove
 
     @classmethod
     def dbapi(cls) -> Any:
-        """Return the FlightSQL DB-API module."""
+        """Return the FlightSQL patched DB-API module."""
         logger.debug("TSDBDialect.dbapi() entry")
-        from adbc_driver_flightsql import (
-            dbapi,  # type: ignore[import-not-found, unused-ignore]
-        )
 
-        logger.debug("TSDBDialect.dbapi() exit: dbapi=%r", dbapi)
-        return dbapi
+        if _adbc_dbapi is None:
+            raise ImportError("adbc_driver_flightsql is not installed.")
+
+        # If we haven't patched the connect method yet, do it now.
+        # We check a custom flag to avoid double-wrapping if dbapi() is called twice.
+        if not getattr(_adbc_dbapi, "_is_wrapped_by_tsdb", False):
+            original_connect = _adbc_dbapi.connect
+
+            def connect_wrapper(*args: Any, **kwargs: Any) -> SafeAdbcConnection:
+                connection = original_connect(*args, **kwargs)
+                return SafeAdbcConnection(connection)
+
+            _adbc_dbapi.connect = connect_wrapper
+            _adbc_dbapi._is_wrapped_by_tsdb = True
+
+        return _adbc_dbapi
 
     def create_connect_args(
         self, url: URL
     ) -> tuple[Sequence[object], Mapping[str, object]]:
         """Translate a SQLAlchemy URL into DB-API connect keyword arguments."""
-        logger.debug("TSDBDialect.create_connect_args() entry: url=%r", url)
         logger.debug(
-            "create_connect_args: url.host=%r, url.port=%r, url.database=%r",
+            "TSDBDialect.create_connect_args: url.host=%r,url.port=%r,url.database=%r",
             url.host,
             url.port,
             url.database,
@@ -86,7 +167,6 @@ class TSDBDialect(default.DefaultDialect):
         query: MutableMapping[str, object] = dict(url.query)
         uri = query.pop("uri", None)
         transport = str(query.pop("transport", "grpc")).replace(" ", "+")
-        logger.debug("create_connect_args: uri=%r, transport=%r", uri, transport)
         if uri is None:
             host = url.host or "localhost"
             port = url.port or (
@@ -97,7 +177,6 @@ class TSDBDialect(default.DefaultDialect):
                 uri = f"{uri}:{port}"
             if url.database:
                 uri = f"{uri}/{url.database}"
-            logger.debug("create_connect_args: constructed uri=%r", uri)
 
         connect_args: dict[str, object] = {"uri": uri}
         if url.username:
@@ -127,10 +206,6 @@ class TSDBDialect(default.DefaultDialect):
 
     def do_ping(self, dbapi_connection: Any) -> bool:
         """Call a lightweight query to validate connectivity."""
-        logger.debug(
-            "TSDBDialect.do_ping() entry: dbapi_connection=%r", dbapi_connection
-        )
-
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("SELECT 1")
@@ -140,7 +215,7 @@ class TSDBDialect(default.DefaultDialect):
             return result
         except Exception as e:
             logger.debug("TSDBDialect.do_ping() exception: %r", e)
-            raise
+            return False
         finally:
             cursor.close()
 
@@ -229,7 +304,6 @@ class TSDBDialect(default.DefaultDialect):
                 ),
             )
 
-        logger.debug(f"{method_name}: executing stmt=%r", stmt)
         result = connection.execute(stmt)
 
         items = [row[0] for row in result]
@@ -277,7 +351,6 @@ class TSDBDialect(default.DefaultDialect):
             ),
             bindparam("table", value=table_name, type_=String(), literal_execute=True),
         )
-        logger.debug("get_columns: executing stmt=%r", stmt)
 
         rows = connection.execute(stmt)
         columns: list[dict[str, object]] = []
@@ -289,9 +362,7 @@ class TSDBDialect(default.DefaultDialect):
                 "nullable": str(row[1]).upper() == "YES",
                 "default": row[3],
             }
-            logger.debug("get_columns: processed column=%r", column_info)
             columns.append(column_info)
-
         logger.debug("TSDBDialect.get_columns() exit: result=%r", columns)
         return columns
 

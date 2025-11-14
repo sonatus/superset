@@ -24,7 +24,7 @@
 # For verbose logging during development:
 # - Set SUPERSET_LOG_LEVEL=debug in docker/.env-local for detailed Superset logs
 # -----------------------------------------------------------------------
-x-superset-image: &superset-image apachesuperset.docker.scarf.sh/apache/superset:${TAG:-latest-dev}
+x-superset-image: &superset-image apachesuperset.docker.scarf.sh/apache/superset:${TAG:-6.0.0rc2-dev}
 x-superset-volumes:
   &superset-volumes # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
   - ./docker:/app/docker
@@ -64,6 +64,8 @@ services:
     restart: unless-stopped
     ports:
       - 8088:8088
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       superset-init:
         condition: service_completed_successfully

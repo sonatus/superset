@@ -1,3 +1,22 @@
+## MIGRATE TO USE STEST
+# cd /home/mkurczew/repos/tsdb_stest/runtime/single_mazda
+# docker network ls | grep single_mazda #--> e.g: mkurczew-single_mazda_net1
+
+# then use the same naming rules to  in SS docker compose:
+# services:
+#   superset:
+#     # ... your existing superset config
+#     networks:
+#       - default
+#       - tsdb_test_network
+
+# networks:
+#   default:
+#     # Your existing network
+#   tsdb_test_network:
+#     external: true
+#     name: mkurczew-single_mazda_net1  # Use actual network name from grep above
+
 #!/bin/bash
 #set -xe
 
@@ -40,7 +59,7 @@ PIDS=()
 cleanup() {
     echo ""
     echo "Received stop signal. Terminating processes..."
-    
+
     # Check if PIDS array is empty
     if [ ${#PIDS[@]} -eq 0 ]; then
         echo "No processes to kill."

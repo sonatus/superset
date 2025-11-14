@@ -15,7 +15,10 @@ dependencies = [
 ]
 
 [project.entry-points."sqlalchemy.dialects"]
-tsdb = "dqe_alchemy.dialect:TSDBDialect"
+tsdb = "tsdb_alchemy.dialect:TSDBDialect"
+
+[project.entry-points."superset.db_engine_specs"]
+tsdb = "tsdb_alchemy.superset.db_engine:DqeEngineSpec"
 
 [build-system]
 requires = ["hatchling>=1.18"]
@@ -27,5 +30,3 @@ dev = [
     "pytest>=8.4.2",
     "sqlalchemy[mypy]<2.0",
 ]
-
-
